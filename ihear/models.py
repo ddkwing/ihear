@@ -30,3 +30,4 @@ class Config:
     openai_model: str = "gpt-4o-mini-transcribe"
     openai_api_key: Optional[str] = None
     insert_destination: str = "paste"
+    hotkey: str = "fn"
