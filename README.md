@@ -20,6 +20,7 @@ python3 -m pip install --upgrade pip
 pip install .
 
 # Optional transcription backends
+
 pip install '.[whisper]'  # Offline Whisper model
 pip install '.[openai]'   # Hosted OpenAI API
 
@@ -92,6 +93,7 @@ ihear menubar
 
 ```bash
 pip install -e '.[whisper,openai]'
+
 pytest
 ```
 
