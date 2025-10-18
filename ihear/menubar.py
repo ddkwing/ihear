@@ -163,6 +163,93 @@ def _paste_from_clipboard() -> None:
         logging.debug("Failed to trigger paste: %s", exc)
 
 
+class RecordingIndicator:
+    """Display a subtle floating indicator while recording."""
+
+    def __init__(self) -> None:
+        try:
+            from AppKit import (  # type: ignore
+                NSBackingStoreBuffered,
+                NSColor,
+                NSFont,
+                NSPanel,
+                NSScreen,
+                NSTextAlignmentCenter,
+                NSTextField,
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowStyleMaskBorderless,
+                NSStatusWindowLevel,
+            )
+            from Quartz import NSMakeRect  # type: ignore
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "The `pyobjc` packages are required for the recording indicator. Install ihear[mac]."
+            ) from exc
+
+        self._NSPanel = NSPanel
+        self._NSScreen = NSScreen
+        self._NSColor = NSColor
+        self._NSFont = NSFont
+        self._NSTextField = NSTextField
+        self._NSMakeRect = NSMakeRect
+        self._style_mask = NSWindowStyleMaskBorderless
+        self._backing = NSBackingStoreBuffered
+        self._behavior = NSWindowCollectionBehaviorCanJoinAllSpaces
+        self._level = NSStatusWindowLevel
+        self._alignment_center = NSTextAlignmentCenter
+        self._window = None
+
+    def show(self) -> None:
+        if self._window is not None:
+            return
+
+        screen = self._NSScreen.mainScreen()
+        if screen is None:
+            return
+
+        frame = screen.frame()
+        width = 140.0
+        height = 60.0
+        margin = 64.0
+        origin_x = (frame.size.width - width) / 2.0
+        origin_y = margin
+
+        panel = self._NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            self._NSMakeRect(origin_x, origin_y, width, height),
+            self._style_mask,
+            self._backing,
+            False,
+        )
+        panel.setBackgroundColor_(self._NSColor.colorWithCalibratedWhite_alpha_(0.0, 0.65))
+        panel.setOpaque_(False)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setCollectionBehavior_(self._behavior)
+        panel.setLevel_(self._level)
+
+        label = self._NSTextField.alloc().initWithFrame_(
+            self._NSMakeRect(0.0, 0.0, width, height)
+        )
+        label.setStringValue_("🔴 Recording")
+        label.setAlignment_(self._alignment_center)
+        label.setFont_(self._NSFont.boldSystemFontOfSize_(22.0))
+        label.setTextColor_(self._NSColor.whiteColor())
+        label.setBezeled_(False)
+        label.setDrawsBackground_(False)
+        label.setEditable_(False)
+        label.setSelectable_(False)
+        panel.contentView().addSubview_(label)
+
+        panel.orderFrontRegardless()
+        self._window = panel
+
+    def hide(self) -> None:
+        if self._window is None:
+            return
+
+        self._window.orderOut_(None)
+        self._window = None
+
+
 class IhearMenuApp:
     """Controller for the macOS menu bar workflow."""
 
@@ -185,6 +272,7 @@ class IhearMenuApp:
         self._recorder = AudioRecorder()
         self._recording = False
         self._processing = False
+        self._indicator = self._create_indicator()
         self._monitor = FnHotkeyMonitor(self._on_hotkey_press, self._on_hotkey_release)
         self._monitor.start()
 
@@ -194,7 +282,16 @@ class IhearMenuApp:
 
     def _quit(self, _sender) -> None:
         self._monitor.stop()
+        if self._indicator is not None:
+            self._indicator.hide()
         self._rumps.quit_application()
+
+    def _create_indicator(self) -> Optional[RecordingIndicator]:
+        try:
+            return RecordingIndicator()
+        except Exception as exc:
+            logging.debug("Recording indicator unavailable: %s", exc)
+            return None
 
     def _on_hotkey_press(self) -> None:
         if self._processing or self._recording:
@@ -213,6 +310,8 @@ class IhearMenuApp:
             self._set_status(f"Recording error: {exc}")
             return
         self._recording = True
+        if self._indicator is not None:
+            self._indicator.show()
         self._set_status("Recording… Release fn to finish.")
 
     def _stop_recording(self) -> None:
@@ -220,11 +319,15 @@ class IhearMenuApp:
             audio_path = self._recorder.stop()
         except Exception as exc:
             self._set_status(f"Recording error: {exc}")
+            if self._indicator is not None:
+                self._indicator.hide()
             return
 
         self._recording = False
         self._processing = True
         self._set_status("Transcribing…")
+        if self._indicator is not None:
+            self._indicator.hide()
 
         thread = threading.Thread(
             target=self._process_audio,

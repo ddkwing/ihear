@@ -29,8 +29,7 @@ mac = [
     "rumps>=0.4",
     "sounddevice>=0.4",
     "soundfile>=0.12",
-    "pyobjc-core>=10.1",
-    "pyobjc-framework-AppKit>=10.1",
+    "pyobjc>=10.1",
 ]
 
 [project.scripts]
