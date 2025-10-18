@@ -13,10 +13,133 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from .config import load_config, update_config
+
 
 def _require_macos() -> None:
     if platform.system() != "Darwin":  # pragma: no cover - platform guard
         raise RuntimeError("The menu bar application is only supported on macOS.")
+
+
+MODIFIER_ALIASES = {
+    "cmd": "command",
+    "⌘": "command",
+    "command": "command",
+    "control": "control",
+    "ctrl": "control",
+    "^": "control",
+    "option": "option",
+    "alt": "option",
+    "⌥": "option",
+    "shift": "shift",
+    "⇧": "shift",
+}
+
+MODIFIER_ORDER = ("control", "option", "shift", "command")
+
+KEY_ALIASES = {
+    "enter": "return",
+    "return": "return",
+    "space": "space",
+    " ": "space",
+    "spacebar": "space",
+    "tab": "tab",
+    "escape": "escape",
+    "esc": "escape",
+    "delete": "delete",
+    "backspace": "delete",
+}
+
+MODIFIER_DISPLAY = {
+    "command": "⌘",
+    "shift": "⇧",
+    "option": "⌥",
+    "control": "⌃",
+}
+
+KEY_DISPLAY = {
+    "space": "Space",
+    "return": "Return",
+    "tab": "Tab",
+    "escape": "Esc",
+    "delete": "Delete",
+}
+
+
+def normalize_hotkey(raw: str) -> str:
+    """Return a canonical representation of a hotkey string."""
+
+    text = raw.strip()
+    if not text:
+        raise ValueError("Hotkey cannot be empty.")
+
+    lowered = text.lower()
+    if lowered == "fn":
+        return "fn"
+
+    parts = [part.strip().lower() for part in lowered.split("+") if part.strip()]
+    if not parts:
+        raise ValueError("Hotkey cannot be empty.")
+    if parts.count("fn"):
+        if len(parts) > 1:
+            raise ValueError("The fn key cannot be combined with other keys.")
+        return "fn"
+
+    modifiers: list[str] = []
+    key: Optional[str] = None
+
+    for part in parts:
+        alias = MODIFIER_ALIASES.get(part, part)
+        if alias in MODIFIER_ORDER:
+            if alias not in modifiers:
+                modifiers.append(alias)
+            continue
+
+        if key is not None:
+            raise ValueError("Only one non-modifier key can be used in a shortcut.")
+
+        mapped = KEY_ALIASES.get(alias, alias)
+        if len(mapped) == 1 and mapped.isprintable():
+            key = mapped
+        elif mapped in KEY_DISPLAY:
+            key = mapped
+        else:
+            raise ValueError(f"Unsupported key '{part}' in shortcut.")
+
+    if key is None:
+        raise ValueError("A shortcut must include a primary key.")
+
+    ordered_modifiers = [mod for mod in MODIFIER_ORDER if mod in modifiers]
+    components = ordered_modifiers + [key]
+    return "+".join(components)
+
+
+def format_hotkey(hotkey: str) -> str:
+    """Return a user friendly representation of a canonical hotkey."""
+
+    if hotkey == "fn":
+        return "fn"
+
+    parts = hotkey.split("+")
+    key = parts[-1]
+    modifiers = parts[:-1]
+
+    display = "".join(MODIFIER_DISPLAY.get(mod, mod.title()) for mod in modifiers)
+
+    if key in KEY_DISPLAY:
+        return f"{display}{KEY_DISPLAY[key]}"
+    if len(key) == 1:
+        return f"{display}{key.upper()}"
+    return f"{display}{key.title()}"
+
+
+def split_hotkey(hotkey: str) -> tuple[list[str], str]:
+    if hotkey == "fn":
+        raise ValueError("fn hotkey should not be split.")
+    parts = hotkey.split("+")
+    if len(parts) < 1:
+        raise ValueError("Hotkey is empty.")
+    return parts[:-1], parts[-1]
 
 
 class AudioRecorder:
@@ -134,6 +257,149 @@ class FnHotkeyMonitor:
             self._NSEvent.removeMonitor_(self._local_monitor)
             self._local_monitor = None
         self._pressed = False
+
+
+class KeyComboHotkeyMonitor:
+    """Trigger callbacks for an arbitrary key combination."""
+
+    def __init__(self, combo: str, on_press: Callable[[], None], on_release: Callable[[], None]) -> None:
+        try:
+            from AppKit import (  # type: ignore
+                NSEvent,
+                NSEventMaskFlagsChanged,
+                NSEventMaskKeyDown,
+                NSEventMaskKeyUp,
+                NSEventModifierFlagCommand,
+                NSEventModifierFlagControl,
+                NSEventModifierFlagOption,
+                NSEventModifierFlagShift,
+            )
+            from Quartz import (  # type: ignore
+                kVK_Delete,
+                kVK_Escape,
+                kVK_Return,
+                kVK_Space,
+                kVK_Tab,
+            )
+        except Exception as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "The `pyobjc` packages are required for global hotkey support. Install ihear[mac]."
+            ) from exc
+
+        modifiers, key = split_hotkey(combo)
+
+        self._NSEvent = NSEvent
+        self._mask_key_down = NSEventMaskKeyDown
+        self._mask_key_up = NSEventMaskKeyUp
+        self._mask_flags_changed = NSEventMaskFlagsChanged
+        self._modifier_flags = {
+            "command": NSEventModifierFlagCommand,
+            "control": NSEventModifierFlagControl,
+            "option": NSEventModifierFlagOption,
+            "shift": NSEventModifierFlagShift,
+        }
+        self._special_keycodes = {
+            "space": kVK_Space,
+            "return": kVK_Return,
+            "escape": kVK_Escape,
+            "tab": kVK_Tab,
+            "delete": kVK_Delete,
+        }
+
+        self._on_press = on_press
+        self._on_release = on_release
+
+        self._modifier_mask = 0
+        for modifier in modifiers:
+            self._modifier_mask |= self._modifier_flags.get(modifier, 0)
+
+        self._expected_key_code = self._special_keycodes.get(key)
+        self._expected_char = None if self._expected_key_code is not None else key
+
+        self._global_key_down = None
+        self._local_key_down = None
+        self._global_key_up = None
+        self._local_key_up = None
+        self._global_flags = None
+        self._local_flags = None
+        self._pressed = False
+
+    def start(self) -> None:
+        if self._global_key_down is not None:
+            return
+
+        def process_key_down(event):
+            if self._matches(event) and not self._pressed:
+                self._pressed = True
+                self._on_press()
+            return event
+
+        def process_key_up(event):
+            if self._pressed and self._key_matches(event):
+                self._pressed = False
+                self._on_release()
+            return event
+
+        def process_flags(event):
+            if self._pressed and not self._modifiers_active(event):
+                self._pressed = False
+                self._on_release()
+            return event
+
+        self._global_key_down = self._NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            self._mask_key_down, process_key_down
+        )
+        self._local_key_down = self._NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            self._mask_key_down, process_key_down
+        )
+        self._global_key_up = self._NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            self._mask_key_up, process_key_up
+        )
+        self._local_key_up = self._NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            self._mask_key_up, process_key_up
+        )
+        self._global_flags = self._NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            self._mask_flags_changed, process_flags
+        )
+        self._local_flags = self._NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            self._mask_flags_changed, process_flags
+        )
+
+    def stop(self) -> None:
+        if self._global_key_down is not None:
+            self._NSEvent.removeMonitor_(self._global_key_down)
+            self._global_key_down = None
+        if self._local_key_down is not None:
+            self._NSEvent.removeMonitor_(self._local_key_down)
+            self._local_key_down = None
+        if self._global_key_up is not None:
+            self._NSEvent.removeMonitor_(self._global_key_up)
+            self._global_key_up = None
+        if self._local_key_up is not None:
+            self._NSEvent.removeMonitor_(self._local_key_up)
+            self._local_key_up = None
+        if self._global_flags is not None:
+            self._NSEvent.removeMonitor_(self._global_flags)
+            self._global_flags = None
+        if self._local_flags is not None:
+            self._NSEvent.removeMonitor_(self._local_flags)
+            self._local_flags = None
+        self._pressed = False
+
+    def _matches(self, event) -> bool:
+        return self._modifiers_active(event) and self._key_matches(event)
+
+    def _key_matches(self, event) -> bool:
+        if self._expected_key_code is not None:
+            return int(event.keyCode()) == int(self._expected_key_code)
+        chars = event.charactersIgnoringModifiers()
+        return bool(chars) and chars.lower() == self._expected_char
+
+    def _modifiers_active(self, event) -> bool:
+        if self._modifier_mask == 0:
+            return True
+        flags = int(event.modifierFlags())
+        return (flags & self._modifier_mask) == self._modifier_mask
 
 
 def _copy_to_pasteboard(text: str) -> None:
@@ -257,31 +523,54 @@ class IhearMenuApp:
         _require_macos()
         import rumps  # type: ignore
 
-        from .config import load_config
         from .transcriber import transcribe_audio
 
         self._rumps = rumps
         self._transcribe_audio = transcribe_audio
         self._config = load_config()
-        self._app = rumps.App("ihear", quit_button=None)
-        self._status_item = rumps.MenuItem("Hold fn to record.")
+
+        try:
+            canonical_hotkey = normalize_hotkey(self._config.hotkey)
+        except ValueError:
+            logging.debug("Invalid stored hotkey %s; falling back to fn.", self._config.hotkey)
+            canonical_hotkey = "fn"
+            self._config = update_config(hotkey=canonical_hotkey)
+        else:
+            if canonical_hotkey != self._config.hotkey:
+                self._config = update_config(hotkey=canonical_hotkey)
+        self._config.hotkey = canonical_hotkey
+        self._hotkey_display = format_hotkey(canonical_hotkey)
+
+        self._app = rumps.App("🎤", quit_button=None)
+        self._status_item = rumps.MenuItem("")
+        self._settings_menu = rumps.MenuItem("Settings")
+        self._settings_menu.add(
+            rumps.MenuItem("OpenAI API Key…", callback=self._open_api_key_dialog)
+        )
+        self._settings_menu.add(
+            rumps.MenuItem("Recording Hotkey…", callback=self._open_hotkey_dialog)
+        )
         self._app.menu = [
             self._status_item,
-            rumps.MenuItem("Quit", callback=self._quit),
+            rumps.separator,
+            self._settings_menu,
+            rumps.MenuItem("Exit", callback=self._quit),
         ]
         self._recorder = AudioRecorder()
         self._recording = False
         self._processing = False
         self._indicator = self._create_indicator()
-        self._monitor = FnHotkeyMonitor(self._on_hotkey_press, self._on_hotkey_release)
-        self._monitor.start()
+        self._hotkey_monitor: Optional[FnHotkeyMonitor | KeyComboHotkeyMonitor] = None
+        self._set_ready_status()
+        self._reload_hotkey_monitor()
 
     def run(self) -> None:  # pragma: no cover - interactive
         self._rumps.debug_mode(False)
         self._app.run()
 
     def _quit(self, _sender) -> None:
-        self._monitor.stop()
+        if self._hotkey_monitor is not None:
+            self._hotkey_monitor.stop()
         if self._indicator is not None:
             self._indicator.hide()
         self._rumps.quit_application()
@@ -292,6 +581,24 @@ class IhearMenuApp:
         except Exception as exc:
             logging.debug("Recording indicator unavailable: %s", exc)
             return None
+
+    def _reload_hotkey_monitor(self) -> None:
+        if self._hotkey_monitor is not None:
+            self._hotkey_monitor.stop()
+        try:
+            self._hotkey_monitor = self._create_hotkey_monitor(self._config.hotkey)
+        except Exception as exc:
+            logging.error("Failed to initialise hotkey monitor: %s", exc)
+            self._hotkey_monitor = None
+            self._set_status(f"Hotkey error: {exc}")
+            return
+        self._hotkey_monitor.start()
+        self._set_ready_status()
+
+    def _create_hotkey_monitor(self, hotkey: str):
+        if hotkey == "fn":
+            return FnHotkeyMonitor(self._on_hotkey_press, self._on_hotkey_release)
+        return KeyComboHotkeyMonitor(hotkey, self._on_hotkey_press, self._on_hotkey_release)
 
     def _on_hotkey_press(self) -> None:
         if self._processing or self._recording:
@@ -312,7 +619,7 @@ class IhearMenuApp:
         self._recording = True
         if self._indicator is not None:
             self._indicator.show()
-        self._set_status("Recording… Release fn to finish.")
+        self._set_status(f"Recording… Release {self._hotkey_display} to finish.")
 
     def _stop_recording(self) -> None:
         try:
@@ -341,7 +648,7 @@ class IhearMenuApp:
             transcript, _metadata = self._transcribe_audio(audio_path)
             self._apply_transcript(transcript.strip())
             self._notify("Transcription complete", "Text inserted from ihear.")
-            self._set_status("Hold fn to record.")
+            self._set_ready_status()
         except Exception as exc:
             logging.exception("Failed to transcribe audio")
             self._set_status(f"Transcription failed: {exc}")
@@ -360,11 +667,66 @@ class IhearMenuApp:
         else:
             logging.debug("Unknown insert destination %s; defaulting to clipboard.", destination)
 
+    def _set_ready_status(self) -> None:
+        self._set_status(f"Hold {self._hotkey_display} to record.")
+
     def _set_status(self, message: str) -> None:
         self._status_item.title = message
 
+    def _open_api_key_dialog(self, _sender) -> None:
+        window = self._rumps.Window(
+            message="Enter your OpenAI API key. Leave blank to remove the saved key.",
+            title="OpenAI API Key",
+            default_text=self._config.openai_api_key or "",
+            ok="Save",
+            cancel="Cancel",
+        )
+        response = window.run()
+        if not response.clicked:
+            return
+
+        value = response.text.strip() or None
+        if value == self._config.openai_api_key:
+            return
+
+        self._config = update_config(openai_api_key=value)
+        self._set_ready_status()
+
+    def _open_hotkey_dialog(self, _sender) -> None:
+        window = self._rumps.Window(
+            message="Enter the keyboard shortcut to start recording (e.g. command+shift+space or fn).",
+            title="Recording Hotkey",
+            default_text=self._config.hotkey,
+            ok="Save",
+            cancel="Cancel",
+        )
+        response = window.run()
+        if not response.clicked:
+            return
+
+        raw_value = response.text.strip()
+        if not raw_value:
+            self._notify("Invalid shortcut", "Shortcut cannot be empty.")
+            return
+
+        try:
+            canonical = normalize_hotkey(raw_value)
+        except ValueError as exc:
+            self._notify("Invalid shortcut", str(exc))
+            return
+
+        if canonical == self._config.hotkey:
+            return
+
+        self._config = update_config(hotkey=canonical)
+        self._hotkey_display = format_hotkey(canonical)
+        self._reload_hotkey_monitor()
+
     def _notify(self, title: str, message: str) -> None:
-        self._rumps.notification("ihear", title, message)
+        try:
+            self._rumps.notification("ihear", title, message)
+        except Exception as exc:  # pragma: no cover - best effort
+            logging.debug("Notification unavailable: %s", exc)
 
 
 def run() -> None:
