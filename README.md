@@ -20,12 +20,18 @@ python3 -m pip install --upgrade pip
 pip install .
 
 # Optional transcription backends
-pip install .[whisper]  # Offline Whisper model
-pip install .[openai]   # Hosted OpenAI API
+
+pip install '.[whisper]'  # Offline Whisper model
+pip install '.[openai]'   # Hosted OpenAI API
 
 # Menu bar requirements (rumps, audio, and PyObjC bindings)
-pip install .[mac]
+pip install '.[mac]'
 ```
+
+> **Note**
+> If you install from PyPI instead of the local checkout, use commands such as
+> `pip install "ihear[mac]"`. Quoting the extras specifier avoids shell globbing
+> errors on shells like `zsh`.
 
 ### Packaging as a standalone app
 
@@ -86,7 +92,8 @@ ihear menubar
 ## Development
 
 ```bash
-pip install -e .[whisper,openai]
+pip install -e '.[whisper,openai]'
+
 pytest
 ```
 

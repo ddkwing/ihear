@@ -187,7 +187,8 @@ def menubar() -> None:  # pragma: no cover - interactive
         from .menubar import run as run_menubar
     except ImportError as exc:
         typer.secho(
-            "Missing dependencies for menu bar mode. Install with `pip install ihear[mac]`.",
+            "Missing dependencies for menu bar mode. Install with `pip install "
+            '"ihear[mac]"` or `pip install \'.[mac]\'` if you are using a local checkout.',
             fg=typer.colors.RED,
             err=True,
         )
