@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ihear"
+version = "0.1.0"
+description = "Voice memo transcription utility inspired by Wispr Flow"
+readme = "README.md"
+authors = [{name = "ihear", email = "support@ihear.local"}]
+requires-python = ">=3.9"
+license = {text = "MIT"}
+keywords = ["transcription", "audio", "wispr", "flow", "cli"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+    "typer>=0.9",
+]
+[project.optional-dependencies]
+whisper = ["openai-whisper>=20230314"]
+openai = ["openai>=1.6"]
+mac = [
+    "numpy>=1.24",
+    "rumps>=0.4",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "pyobjc-core>=10.1",
+    "pyobjc-framework-AppKit>=10.1",
+]
+
+[project.scripts]
+ihear = "ihear.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ihear"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra"
+testpaths = ["tests"]
