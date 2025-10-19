@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,26 @@ from .summarizer import Summarizer
 from .transcriber import get_backend, transcribe_audio
 
 app = typer.Typer(add_completion=False, help="Voice note transcription and management tool.")
+
+
+@app.callback(invoke_without_command=True)
+def main(
+    ctx: typer.Context,
+    daemon: bool = typer.Option(False, "--daemon", "-d", help="Launch the menu bar daemon"),
+    version: bool = typer.Option(False, "--version", "-v", help="Show version and exit"),
+) -> None:
+    if version:
+        typer.echo("ihear v0.1.0")
+        raise typer.Exit()
+    
+    if daemon:
+        if ctx.invoked_subcommand is None:
+            ctx.invoke(daemon_command)
+        return
+    
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
 
 
 @app.command()
@@ -179,15 +200,15 @@ def backends() -> None:
         typer.echo("Available backends: " + ", ".join(available))
 
 
-@app.command()
-def menubar() -> None:  # pragma: no cover - interactive
-    """Launch the macOS menu bar helper."""
+@app.command(name="daemon")
+def daemon_command() -> None:  # pragma: no cover - interactive
+    """Launch the macOS menu bar daemon."""
 
     try:
         from .menubar import run as run_menubar
     except ImportError as exc:
         typer.secho(
-            "Missing dependencies for menu bar mode. Install with `pip install "
+            "Missing dependencies for daemon mode. Install with `pip install "
             '"ihear[mac]"` or `pip install \'.[mac]\'` if you are using a local checkout.',
             fg=typer.colors.RED,
             err=True,
@@ -198,6 +219,73 @@ def menubar() -> None:  # pragma: no cover - interactive
         run_menubar()
     except RuntimeError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="menubar", hidden=True)
+def menubar_alias() -> None:  # pragma: no cover - backwards compatibility
+    """Deprecated: use 'ihear daemon' or 'ihear -d' instead."""
+    typer.secho(
+        "Warning: 'ihear menubar' is deprecated. Use 'ihear daemon' or 'ihear -d' instead.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    try:
+        from .menubar import run as run_menubar
+        run_menubar()
+    except ImportError as exc:
+        typer.secho(
+            "Missing dependencies. Install with `pip install \"ihear[mac]\"`",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    except RuntimeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def setup() -> None:
+    """Run the interactive setup wizard."""
+
+    try:
+        from .onboarding import run_onboarding
+    except ImportError as exc:
+        typer.secho(
+            "Missing dependencies for setup. Install with `pip install "
+            '"ihear[mac]"` or `pip install \'.[mac]\'` if you are using a local checkout.',
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        run_onboarding()
+    except Exception as exc:
+        typer.secho(f"Setup failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command()
+def settings() -> None:
+    """Open the interactive settings configuration."""
+
+    try:
+        from .settings_ui import show_settings_ui
+    except ImportError as exc:
+        typer.secho(
+            "Missing dependencies for settings UI. Install with `pip install "
+            '"ihear[mac]"` or `pip install \'.[mac]\'` if you are using a local checkout.',
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        show_settings_ui()
+    except Exception as exc:
+        typer.secho(f"Settings UI failed: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from exc
 
 

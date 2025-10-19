@@ -158,6 +158,10 @@ class AudioRecorder:
         self._channels = channels
         self._stream: Optional[sd.InputStream] = None
         self._frames: list[np.ndarray] = []
+        self._audio_callback: Optional[Callable[[np.ndarray], None]] = None
+
+    def set_audio_callback(self, callback: Callable[[np.ndarray], None]) -> None:
+        self._audio_callback = callback
 
     def start(self) -> None:
         if self._stream is not None:
@@ -202,12 +206,23 @@ class AudioRecorder:
         if status:
             logging.debug("Recorder status: %s", status)
         self._frames.append(indata.copy())
+        if self._audio_callback is not None:
+            try:
+                self._audio_callback(indata.copy())
+            except Exception as exc:
+                logging.debug("Audio callback error: %s", exc)
 
 
 class FnHotkeyMonitor:
     """Trigger callbacks when the fn key is pressed or released."""
 
-    def __init__(self, on_press: Callable[[], None], on_release: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_press: Callable[[], None],
+        on_release: Callable[[], None],
+        on_double_tap: Optional[Callable[[], None]] = None,
+        double_tap_window: float = 0.3,
+    ) -> None:
         try:
             from AppKit import (  # type: ignore
                 NSEvent,
@@ -224,19 +239,30 @@ class FnHotkeyMonitor:
         self._flag = NSEventModifierFlagFunction
         self._on_press = on_press
         self._on_release = on_release
+        self._on_double_tap = on_double_tap
+        self._double_tap_window = double_tap_window
         self._global_monitor = None
         self._local_monitor = None
         self._pressed = False
+        self._last_press_time = 0.0
 
     def start(self) -> None:
         if self._global_monitor is not None:
             return
 
         def handle(event):
+            import time
+
             is_pressed = bool(event.modifierFlags() & self._flag)  # type: ignore[attr-defined]
             if is_pressed and not self._pressed:
                 self._pressed = True
-                self._on_press()
+                current_time = time.time()
+                if self._on_double_tap and (current_time - self._last_press_time) < self._double_tap_window:
+                    self._on_double_tap()
+                    self._last_press_time = 0.0
+                else:
+                    self._on_press()
+                    self._last_press_time = current_time
             elif not is_pressed and self._pressed:
                 self._pressed = False
                 self._on_release()
@@ -257,6 +283,7 @@ class FnHotkeyMonitor:
             self._NSEvent.removeMonitor_(self._local_monitor)
             self._local_monitor = None
         self._pressed = False
+        self._last_press_time = 0.0
 
 
 class KeyComboHotkeyMonitor:
@@ -543,24 +570,22 @@ class IhearMenuApp:
 
         self._app = rumps.App("🎤", quit_button=None)
         self._status_item = rumps.MenuItem("")
-        self._settings_menu = rumps.MenuItem("Settings")
-        self._settings_menu.add(
-            rumps.MenuItem("OpenAI API Key…", callback=self._open_api_key_dialog)
-        )
-        self._settings_menu.add(
-            rumps.MenuItem("Recording Hotkey…", callback=self._open_hotkey_dialog)
-        )
         self._app.menu = [
             self._status_item,
             rumps.separator,
-            self._settings_menu,
+            rumps.MenuItem("About", callback=self._show_about),
             rumps.MenuItem("Exit", callback=self._quit),
         ]
         self._recorder = AudioRecorder()
         self._recording = False
+        self._continuous_mode = False
         self._processing = False
         self._indicator = self._create_indicator()
+        self._waveform = self._create_waveform()
         self._hotkey_monitor: Optional[FnHotkeyMonitor | KeyComboHotkeyMonitor] = None
+        
+        self._recorder.set_audio_callback(self._on_audio_data)
+        
         self._set_ready_status()
         self._reload_hotkey_monitor()
 
@@ -573,6 +598,8 @@ class IhearMenuApp:
             self._hotkey_monitor.stop()
         if self._indicator is not None:
             self._indicator.hide()
+        if self._waveform is not None:
+            self._waveform.hide()
         self._rumps.quit_application()
 
     def _create_indicator(self) -> Optional[RecordingIndicator]:
@@ -581,6 +608,23 @@ class IhearMenuApp:
         except Exception as exc:
             logging.debug("Recording indicator unavailable: %s", exc)
             return None
+
+    def _create_waveform(self):
+        try:
+            from .waveform import WaveformIndicator
+            return WaveformIndicator()
+        except Exception as exc:
+            logging.debug("Waveform indicator unavailable: %s", exc)
+            return None
+
+    def _on_audio_data(self, audio_chunk: np.ndarray) -> None:
+        if self._waveform is not None:
+            self._waveform.update(audio_chunk)
+        else:
+            logging.debug("Waveform is None, cannot update")
+
+    def _show_about(self, _sender) -> None:
+        self._notify("ihear v0.1.0", "Voice transcription for macOS")
 
     def _reload_hotkey_monitor(self) -> None:
         if self._hotkey_monitor is not None:
@@ -597,18 +641,43 @@ class IhearMenuApp:
 
     def _create_hotkey_monitor(self, hotkey: str):
         if hotkey == "fn":
-            return FnHotkeyMonitor(self._on_hotkey_press, self._on_hotkey_release)
+            return FnHotkeyMonitor(
+                self._on_hotkey_press,
+                self._on_hotkey_release,
+                on_double_tap=self._on_double_tap,
+            )
         return KeyComboHotkeyMonitor(hotkey, self._on_hotkey_press, self._on_hotkey_release)
 
-    def _on_hotkey_press(self) -> None:
-        if self._processing or self._recording:
+    def _on_double_tap(self) -> None:
+        if self._processing:
             return
-        self._start_recording()
+        self._continuous_mode = not self._continuous_mode
+        if self._continuous_mode:
+            self._notify("Continuous Mode", "Tap fn to toggle recording")
+            self._set_status("Continuous mode: Tap fn to start/stop recording")
+        else:
+            if self._recording:
+                self._stop_recording()
+            self._notify("Normal Mode", "Hold fn to record")
+            self._set_ready_status()
+
+    def _on_hotkey_press(self) -> None:
+        if self._processing:
+            return
+        if self._continuous_mode:
+            if self._recording:
+                self._stop_recording()
+            else:
+                self._start_recording()
+        else:
+            if not self._recording:
+                self._start_recording()
 
     def _on_hotkey_release(self) -> None:
-        if not self._recording:
+        if self._continuous_mode:
             return
-        self._stop_recording()
+        if self._recording:
+            self._stop_recording()
 
     def _start_recording(self) -> None:
         try:
@@ -619,7 +688,13 @@ class IhearMenuApp:
         self._recording = True
         if self._indicator is not None:
             self._indicator.show()
-        self._set_status(f"Recording… Release {self._hotkey_display} to finish.")
+        if self._waveform is not None:
+            self._waveform.show()
+        
+        if self._continuous_mode:
+            self._set_status(f"Recording… Tap {self._hotkey_display} to stop.")
+        else:
+            self._set_status(f"Recording… Release {self._hotkey_display} to finish.")
 
     def _stop_recording(self) -> None:
         try:
@@ -628,6 +703,8 @@ class IhearMenuApp:
             self._set_status(f"Recording error: {exc}")
             if self._indicator is not None:
                 self._indicator.hide()
+            if self._waveform is not None:
+                self._waveform.hide()
             return
 
         self._recording = False
@@ -635,6 +712,8 @@ class IhearMenuApp:
         self._set_status("Transcribing…")
         if self._indicator is not None:
             self._indicator.hide()
+        if self._waveform is not None:
+            self._waveform.hide()
 
         thread = threading.Thread(
             target=self._process_audio,
@@ -663,7 +742,7 @@ class IhearMenuApp:
         if destination == "paste":
             _paste_from_clipboard()
         elif destination == "clipboard":
-            return
+            pass
         else:
             logging.debug("Unknown insert destination %s; defaulting to clipboard.", destination)
 
@@ -673,59 +752,10 @@ class IhearMenuApp:
     def _set_status(self, message: str) -> None:
         self._status_item.title = message
 
-    def _open_api_key_dialog(self, _sender) -> None:
-        window = self._rumps.Window(
-            message="Enter your OpenAI API key. Leave blank to remove the saved key.",
-            title="OpenAI API Key",
-            default_text=self._config.openai_api_key or "",
-            ok="Save",
-            cancel="Cancel",
-        )
-        response = window.run()
-        if not response.clicked:
-            return
-
-        value = response.text.strip() or None
-        if value == self._config.openai_api_key:
-            return
-
-        self._config = update_config(openai_api_key=value)
-        self._set_ready_status()
-
-    def _open_hotkey_dialog(self, _sender) -> None:
-        window = self._rumps.Window(
-            message="Enter the keyboard shortcut to start recording (e.g. command+shift+space or fn).",
-            title="Recording Hotkey",
-            default_text=self._config.hotkey,
-            ok="Save",
-            cancel="Cancel",
-        )
-        response = window.run()
-        if not response.clicked:
-            return
-
-        raw_value = response.text.strip()
-        if not raw_value:
-            self._notify("Invalid shortcut", "Shortcut cannot be empty.")
-            return
-
-        try:
-            canonical = normalize_hotkey(raw_value)
-        except ValueError as exc:
-            self._notify("Invalid shortcut", str(exc))
-            return
-
-        if canonical == self._config.hotkey:
-            return
-
-        self._config = update_config(hotkey=canonical)
-        self._hotkey_display = format_hotkey(canonical)
-        self._reload_hotkey_monitor()
-
     def _notify(self, title: str, message: str) -> None:
         try:
             self._rumps.notification("ihear", title, message)
-        except Exception as exc:  # pragma: no cover - best effort
+        except Exception as exc:
             logging.debug("Notification unavailable: %s", exc)
 
 

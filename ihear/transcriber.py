@@ -33,7 +33,12 @@ class WhisperBackend:
         self._model = whisper.load_model(model_name, device=device)
 
     def transcribe(self, audio_path: Path) -> Tuple[str, dict]:
-        result = self._model.transcribe(str(audio_path))
+        result = self._model.transcribe(
+            str(audio_path),
+            task="transcribe",
+            temperature=0.0,
+            initial_prompt="Hello, how are you? I'm doing well, thank you. Please transcribe with proper punctuation.",
+        )
         return result.get("text", "").strip(), {k: v for k, v in result.items() if k != "text"}
 
 
@@ -76,20 +81,22 @@ def get_backend(preferred: Optional[str] = None) -> TranscriptionBackend:
     backend_name = preferred or config.backend
 
     if backend_name in {"whisper", "auto"}:
-        with contextlib.suppress(Exception):
+        try:
             return WhisperBackend(config.whisper_model)
-        if backend_name == "whisper":
-            raise RuntimeError(
-                "Failed to initialise Whisper backend. Ensure `openai-whisper` is installed."
-            )
+        except Exception as exc:
+            if backend_name == "whisper":
+                raise RuntimeError(
+                    f"Failed to initialise Whisper backend: {exc}. Ensure `openai-whisper` is installed."
+                ) from exc
 
     if backend_name in {"openai", "auto"}:
-        with contextlib.suppress(Exception):
+        try:
             return OpenAIBackend(config.openai_model, config.openai_api_key)
-        if backend_name == "openai":
-            raise RuntimeError(
-                "Failed to initialise OpenAI backend. Check your API key and internet connection."
-            )
+        except Exception as exc:
+            if backend_name == "openai":
+                raise RuntimeError(
+                    f"Failed to initialise OpenAI backend: {exc}. Check your API key and internet connection."
+                ) from exc
 
     return DummyBackend()
 

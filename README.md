@@ -69,25 +69,53 @@ ihear summarise 1
 ihear delete 1
 ```
 
-## Menu bar helper
+## Menu bar daemon
 
 After installing the `mac` extra you can start the background recorder:
 
 ```bash
-ihear menubar
+ihear daemon
+# or
+ihear -d
+# or
+ihear --daemon
 ```
 
-- Hold the `fn` key to capture audio; releasing the key stops recording.
+### Recording Modes
+
+- **Quick Mode (default)**: Hold the `fn` key to capture audio; releasing the key stops recording.
+- **Continuous Mode**: Double-tap `fn` to enter continuous mode. Tap `fn` once to start/stop recording.
+  This is useful for longer recordings where holding the key is uncomfortable.
+
+### Features
+
+- Real-time waveform visualization while recording shows audio levels
 - Audio is captured with the system default microphone and transcribed using your
-  configured backend.
-- By default the resulting text is copied to the clipboard and pasted at the current
-  cursor position. To keep transcripts on the clipboard without pasting, run:
+  configured backend
+- Text is always copied to the clipboard AND pasted at the current cursor position by default
+- Minimal menu bar interface with About and Exit options
+- Notifications surface success or failure so you do not need to check a log window
 
-  ```bash
-  ihear config --insert-destination clipboard
-  ```
+### Configuration
 
-- Notifications surface success or failure so you do not need to check a log window.
+Run the interactive setup wizard on first use:
+
+```bash
+ihear setup
+```
+
+Configure settings at any time with the interactive TUI (use arrow keys to navigate):
+
+```bash
+ihear settings
+```
+
+The settings interface provides:
+- Arrow key navigation between fields
+- Tab to move between sections
+- Enter to edit values
+- Real-time preview of changes
+- Ctrl+S to save, ESC to cancel
 
 ## Development
 

@@ -30,6 +30,8 @@ mac = [
     "sounddevice>=0.4",
     "soundfile>=0.12",
     "pyobjc>=10.1",
+    "rich>=13.0",
+    "textual>=0.41.0",
 ]
 
 [project.scripts]
