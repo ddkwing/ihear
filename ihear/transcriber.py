@@ -23,12 +23,14 @@ class WhisperBackend:
         self.model_name = model_name
         try:
             import whisper  # type: ignore
+            import torch
         except Exception as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
                 "The `openai-whisper` package is required for local transcription."
             ) from exc
         self._whisper = whisper
-        self._model = whisper.load_model(model_name)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._model = whisper.load_model(model_name, device=device)
 
     def transcribe(self, audio_path: Path) -> Tuple[str, dict]:
         result = self._model.transcribe(str(audio_path))

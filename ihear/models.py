@@ -27,7 +27,7 @@ class Config:
 
     backend: str = "auto"
     whisper_model: str = "base"
-    openai_model: str = "gpt-4o-mini-transcribe"
+    openai_model: str = "whisper-1"
     openai_api_key: Optional[str] = None
     insert_destination: str = "paste"
     hotkey: str = "fn"
