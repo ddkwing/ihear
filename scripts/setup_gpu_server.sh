@@ -6,20 +6,42 @@ if [[ "${TRACE:-0}" == "1" ]]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENv_PATH="${ROOT_DIR}/.venv"
+VENV_PATH="${ROOT_DIR}/.venv"
 WRAPPER_PATH="/usr/local/bin/ihear-api"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-echo "[ihear] Initialising virtual environment at ${VENv_PATH}"
-python3 -m venv "${VENv_PATH}"
+if ! command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
+  echo "[ihear] ${PYTHON_BIN} not found. Install Python 3.9+ and re-run." >&2
+  exit 1
+fi
+
+if ! "${PYTHON_BIN}" <<'PYCODE'
+import sys
+if sys.version_info < (3, 9):
+    raise SystemExit(1)
+PYCODE
+then
+  echo "[ihear] Python 3.9+ is required. Current interpreter is $(${PYTHON_BIN} -V)." >&2
+  exit 1
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "[ihear] Installing uv (https://astral.sh/uv)"
+  curl -Ls https://astral.sh/uv/install.sh | sh
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+echo "[ihear] Initialising virtual environment at ${VENV_PATH} with ${PYTHON_BIN}"
+uv venv "${VENV_PATH}" --python "${PYTHON_BIN}"
 # shellcheck disable=SC1091
-source "${VENv_PATH}/bin/activate"
+source "${VENV_PATH}/bin/activate"
 
 echo "[ihear] Upgrading pip tooling"
-python -m pip install --upgrade pip wheel setuptools
+uv pip install --python "${VENV_PATH}/bin/python" --upgrade pip wheel setuptools
 
 echo "[ihear] Installing server dependencies"
-python -m pip install -e "${ROOT_DIR}[server,whisper]"
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu118
+uv pip install --python "${VENV_PATH}/bin/python" -e "${ROOT_DIR}[server,whisper]"
+uv pip install --python "${VENV_PATH}/bin/python" torch --index-url https://download.pytorch.org/whl/cu118
 
 echo "[ihear] Validating CUDA availability and preloading Whisper medium model"
 python <<'PYCODE'
@@ -36,7 +58,7 @@ PYCODE
 echo "[ihear] Creating launch wrapper at ${WRAPPER_PATH}"
 sudo tee "${WRAPPER_PATH}" >/dev/null <<EOF
 #!/usr/bin/env bash
-source "${VENv_PATH}/bin/activate"
+source "${VENV_PATH}/bin/activate"
 cd "${ROOT_DIR}"
 exec uvicorn ihear.api:app --host 0.0.0.0 --port "\${IHEAR_API_PORT:-8000}"
 EOF
