@@ -20,6 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "typer>=0.9",
+    "httpx>=0.25",
 ]
 [project.optional-dependencies]
 whisper = ["openai-whisper>=20230314"]
@@ -32,6 +33,11 @@ mac = [
     "pyobjc>=10.1",
     "rich>=13.0",
     "textual>=0.41.0",
+]
+server = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.24",
+    "python-multipart>=0.0.7",
 ]
 
 [project.scripts]

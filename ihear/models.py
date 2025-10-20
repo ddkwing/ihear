@@ -31,3 +31,7 @@ class Config:
     openai_api_key: Optional[str] = None
     insert_destination: str = "paste"
     hotkey: str = "fn"
+    server_url: Optional[str] = None
+    server_token: Optional[str] = None
+    verify_ssl: bool = True
+    api_timeout: float = 60.0

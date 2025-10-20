@@ -1,13 +1,15 @@
 # ihear
 
-`ihear` is a macOS-oriented transcription assistant inspired by Wispr Flow. It provides
-both a CLI workflow and a lightweight menu bar helper that lets you capture speech and
-send the transcript wherever you are typing.
+`ihear` is a macOS-oriented transcription assistant inspired by Wispr Flow. It now
+ships with a GPU-ready FastAPI backend plus a streamlined CLI that can talk to the
+server or run fully offline when needed. A lightweight menu bar helper remains
+available for macOS users.
 
 ## Features
 
+- GPU-hosted Whisper medium inference for fast, private transcription on CUDA machines.
 - Multiple transcription backends with automatic selection between local Whisper and
-  the OpenAI API.
+  the OpenAI API when operating offline.
 - Automatic text summarisation for archived recordings.
 - SQLite-backed storage so you can browse, inspect, and delete past transcripts.
 - Menu bar recorder that listens for the `fn` key, captures audio, transcribes it, and
@@ -46,27 +48,60 @@ pyinstaller -n ihear --onefile ihear/cli.py
 The resulting binary can then be wrapped into a `.app` with utilities like Platypus or
 Automator if you prefer a dock icon.
 
+### GPU server deployment
+
+On the target CUDA host, run the helper script to provision dependencies, preload the
+Whisper medium model, and install a launch wrapper under `/usr/local/bin/ihear-api`:
+
+```bash
+./scripts/setup_gpu_server.sh
+ihear-api  # starts uvicorn on port 8000 by default
+```
+
+Set `IHEAR_API_PORT=9000 ihear-api` to customise the listener port, or follow the
+systemd unit template echoed by the script for automatic start-up.
+
+### Client installation (connecting to a GPU host)
+
+Once the API is running, set up the CLI on each client machine:
+
+```bash
+python3 -m venv ~/.virtualenvs/ihear && source ~/.virtualenvs/ihear/bin/activate
+pip install -e '.[whisper,openai,server]'  # or just pip install -e . for CLI-only use
+
+# Point the CLI at the remote server and store credentials in ~/.ihear/config.json
+ihear config --server-url https://gpu-host:8000
+ihear login  # enter bearer token if the server requires one
+```
+
+Test connectivity with `ihear health` or a small transcription run. If the client is
+macOS-based and you need the menu bar helper, also install `pip install -e '.[mac]'`.
+
 ## CLI usage
 
 ```bash
-# List backends detected on this machine
-ihear backends
+# Point the CLI at your server (stored in ~/.ihear/config.json)
+ihear config --server-url https://gpu-host:8000
 
-# Configure OpenAI usage
-ihear config --backend openai --openai-api-key sk-...
+# Store (or rotate) your API token
+ihear login
 
-# Transcribe an audio file and store the result
+# Verify server health and model information
+ihear health
+
+# Transcribe an audio file and store the result remotely
 ihear transcribe demo.m4a --title "Weekly Sync"
 
-# Show your library
+# List or inspect server-side transcripts
 ihear list
 ihear show 1
 
-# Refresh a summary
+# Refresh a summary or delete entries on the server
 ihear summarise 1
-
-# Remove an entry
 ihear delete 1
+
+# Force offline mode for edge cases (uses local Whisper/OpenAI backends)
+ihear transcribe demo.m4a --offline --backend whisper
 ```
 
 ## Menu bar daemon
@@ -120,11 +155,10 @@ The settings interface provides:
 ## Development
 
 ```bash
-pip install -e '.[whisper,openai]'
+pip install -e '.[whisper,openai,server]'
 
 pytest
 ```
 
 Configuration and cached transcripts live inside `~/.ihear`. Delete that folder if you
 need a clean slate.
-

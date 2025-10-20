@@ -30,6 +30,7 @@ class WhisperBackend:
             ) from exc
         self._whisper = whisper
         device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
         self._model = whisper.load_model(model_name, device=device)
 
     def transcribe(self, audio_path: Path) -> Tuple[str, dict]:
