@@ -18,7 +18,8 @@ echo "[ihear] Upgrading pip tooling"
 python -m pip install --upgrade pip wheel setuptools
 
 echo "[ihear] Installing server dependencies"
-python -m pip install -e "${ROOT_DIR}[server,whisper]" torch --index-url https://download.pytorch.org/whl/cu118
+python -m pip install -e "${ROOT_DIR}[server,whisper]"
+python -m pip install torch --index-url https://download.pytorch.org/whl/cu118
 
 echo "[ihear] Validating CUDA availability and preloading Whisper medium model"
 python <<'PYCODE'
